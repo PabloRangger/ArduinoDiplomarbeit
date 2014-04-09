@@ -1,34 +1,31 @@
-/// @dir RF12demo 
-/// Configure some values in EEPROM for easy config of the RF12 later on.
-// 2009-05-06 <jc@wippler.nl> http://opensource.org/licenses/mit-license.php
-
-// this version adds flash memory support, 2009-11-19
-
-
 #include <JeeLib.h>
-#include <RF12sio.h>
+#include <Ports.h>
+#include <PortsBMP085.h>
+#include <PortsLCD.h>
+#include <PortsSHT11.h>
 #include <RF12.h>
+#include <RF12sio.h>
+#include <EEPROM.h>
+
 #include <util/crc16.h>
 #include <util/parity.h>
 #include <avr/eeprom.h>
 #include <avr/pgmspace.h>
 
-// ATtiny's only support outbound serial @ 38400 baud, and no DataFlash logging
-
-/*long paultime1;
-long paultime2;
-long paultimesp;
-*/
-
-int rfmids = 2;
+unsigned long timeStart;
+unsigned long timeNow;
+int my_id = 99;
+int EEPROM_ADDRESS = 400;
+static byte checkserver[70] =  {RF12_433MHZ, 212, 30, 11, 11, 11};
+bool serverup = false;
+String plugin = "111100001111";
 
 #if defined(__AVR_ATtiny84__) ||defined(__AVR_ATtiny44__)
 #define SERIAL_BAUD 38400
 #else
 #define SERIAL_BAUD 57600
 
-#define LICHT_PIN	4	//Licht ein und ausschalten!
-
+#define LICHT_PIN	4	//Licht ein und ausschalten
 #define DATAFLASH 1 // check for presence of DataFlash memory on JeeLink
 #define FLASH_MBIT  16  // support for various dataflash sizes: 4/8/16 Mbit
 
@@ -575,6 +572,7 @@ const char helpText1[] PROGMEM =
   "Remote control commands:" "\n"
   "  <hchi>,<hclo>,<addr>,<cmd> f     - FS20 command (868 MHz)" "\n"
   "  <addr>,<dev>,<on> k              - KAKU command (433 MHz)" "\n"
+  "MY ID:" "\n"
 ;
 const char helpText2[] PROGMEM = 
   "Flash storage (JeeLink only):" "\n"
@@ -601,6 +599,8 @@ static void showHelp () {
     showString(helpText2);
   Serial.println("Current configuration:");
   rf12_config();
+  Serial.print("\n\nMy ID: ");
+  Serial.println(my_id);
 }
 
 static void handleInput (char c) {
@@ -740,36 +740,57 @@ void displayVersion(uint8_t newline ) {
 
 }
 
+
+void changeValue(int val){
+
+	if(val > 0){
+		digitalWrite(LICHT_PIN, HIGH);
+	}
+	else{
+		digitalWrite(LICHT_PIN, LOW);
+	}
+
+}
+
 void setup() {
-
-  //paultime1 = millis();
-
-	static uint8_t destid = (uint8_t) 30;
-	static byte sentid[65] =  {(byte) 1, (byte) 1, (byte) 1};
-
-	rf12_sendNow(destid, sentid, 3);						//YOLO
-	rf12_sendWait(2);
-
-
+  
+  pinMode(LICHT_PIN, OUTPUT);
+ 
+  timeStart = millis();
+  
   Serial.begin(SERIAL_BAUD);
   displayVersion(0);
   activityLed(0);
-
-  if (rf12_config()) {
-    config.nodeId = eeprom_read_byte(RF12_EEPROM_ADDR);
-    config.group = eeprom_read_byte(RF12_EEPROM_ADDR + 1);
-  } else {
-    config.nodeId = 0x41; // 433 MHz, node 1
-    config.group = 0xD4;  // default group 212
-    saveConfig();
-  }
+  config.nodeId = 0x42; // 433 MHz, node 2 TODO: Check
+  config.group = 0xD4;  // default group 212
+  saveConfig();
+  
 
   df_initialize();
-  
+ 
   showHelp();
+  
+  byte val = EEPROM.read(EEPROM_ADDRESS);
+  
+  if(val != 255){
+    my_id = val;
+  }
+  
+  if(my_id == 99){
+    rf12_sendNow(checkserver[3], checkserver+3, 3); //sendNow(destination, data, length-1)
+    rf12_sendWait(2);
+  }
 }
 
 void loop() {
+    if(!serverup && my_id == 99){
+	timeNow = millis();
+	if(timeNow >= (timeStart+10000)){
+		rf12_sendNow(checkserver[3], checkserver+3, 3); //Loop to check for server, in network healthy time-intervals
+		rf12_sendWait(2);
+		timeStart = timeNow;
+	}
+    }
   if (Serial.available())
     handleInput(Serial.read());
 
@@ -791,27 +812,39 @@ void loop() {
       showByte(rf12_grp);
     }
     Serial.print(' ');
-    showByte(rf12_hdr);
+    showByte(rf12_hdr);    
     for (byte i = 0; i < n; ++i) {
       if (!useHex)
         Serial.print(' ');
 
-	  if((int) rf12_data[0] == 2 && rf12_data[1] != NULL)
-			{
-						//SWAG
+          if((int) rf12_data[0] == 200 && (int) rf12_data[1] == 200 && (int) rf12_data[2] == 200 && my_id==99) //Signal 200 200 200 X, Set id to X
+          {
+				my_id = rf12_data[3];
+                                EEPROM.write(EEPROM_ADDRESS, my_id);																
+				byte id_set_to[70] =  {RF12_433MHZ, 212, 30, 15, 15, 15, my_id}; 	// Response 15 15 15 X -> id successfully set to X
+				rf12_sendNow(id_set_to[3], id_set_to+3, 4); 
+				rf12_sendWait(0);
+				
+          }
+          else if((int) rf12_data[0] == 205 && (int) rf12_data[1] == 205 && (int) rf12_data[2] == 205 && (int) rf12_data[3] == my_id){
+				changeValue(rf12_data[4]);							//Signal 205 205 205 X, change value to X
 
-				  if((int) rf12_data[2] == 3 && rf12_data[3] != NULL)
-				  {
-					  rf12_initialize(rf12_data[1], 1, rf12_data[3]);
-				  }
-
-				  else{
-				  
-					  rf12_initialize(rf12_data[1], 1, 212);
-				  
-				  }
-			}
-
+            byte send_newarduino[70] =  {RF12_433MHZ, 212, 30, 20, 20, 20, rf12_data[4],my_id};  		//Server online -> Ask for ID, if ID == 99
+      	    rf12_sendNow(send_newarduino[3], send_newarduino+3, 5); 
+            rf12_sendWait(0);
+          }
+			
+		  //sendarray[70] = {MHZ, GRP, EigeneID, sendToId, zusendendesZeug}
+		  //sendNow(destination, data, length-1)
+		  
+	  else if(((int) rf12_data[0] == 111 && (int) rf12_data[1] == 111 && (int) rf12_data[2] == 111 && my_id == 99)){
+      	    serverup = true;										//Signal 111 111 111, Server gave response -> Server is up
+      	 	
+      	    byte send_newarduino[70] =  {RF12_433MHZ, 212, 30, 1, 1, 1};  		//Server online -> Ask for ID, if ID == 99
+      	    rf12_sendNow(send_newarduino[3], send_newarduino+ 3, 3); 
+            rf12_sendWait(2);
+	  	
+	  }	
 		
 	  	
 		/*if((int) rf12_data[i] == 1)
@@ -830,7 +863,7 @@ void loop() {
 
 	//			rf12_sendNow(destid, sentid, 2); //gibt im andan RFM sei ID mit
 	//			rf12_sendWait(2);
-	//			//NOTE: mit rf12_initialize(...) kann man dann die GRP & ID ändan
+	//			//NOTE: mit rf12_initialize(...) kann man dann die GRP & ID ï¿½ndan
 
 	//			rfmids++;
 	//		}

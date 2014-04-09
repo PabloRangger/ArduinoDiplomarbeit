@@ -1,35 +1,36 @@
-#include <cubeServer.h>
-
 #include <JeeLib.h>
-#include <RF12sio.h>
+#include <Ports.h>
+#include <PortsBMP085.h>
+#include <PortsLCD.h>
+#include <PortsSHT11.h>
 #include <RF12.h>
+#include <RF12sio.h>
+#include <EEPROM.h>
+
 #include <util/crc16.h>
 #include <util/parity.h>
 #include <avr/eeprom.h>
 #include <avr/pgmspace.h>
 
-
-// ATtiny's only support outbound serial @ 38400 baud, and no DataFlash logging
-
-/*long paultime1;
-long paultime2;
-long paultimesp;
-*/
-
-int rfmids = 2;
-int rfmid_backup_strat;
-String serialinput;
+unsigned long timeStart;
+unsigned long timeNow;
+int my_id = 99;
+int EEPROM_ADDRESS = 400;
+static byte checkserver[70] =  {
+  RF12_433MHZ, 212, 30, 11, 11, 11};
+bool serverup = false;
+String plugin = "1111111122222222";
 
 #if defined(__AVR_ATtiny84__) ||defined(__AVR_ATtiny44__)
 #define SERIAL_BAUD 38400
 #else
 #define SERIAL_BAUD 57600
 
-#define LICHT_PIN	4	//Licht ein und ausschalten!
-
+#define LICHT_PIN	4	//Licht ein und ausschalten
 #define DATAFLASH 1 // check for presence of DataFlash memory on JeeLink
 #define FLASH_MBIT  16  // support for various dataflash sizes: 4/8/16 Mbit
 
+#define aPIN_0 0
 #define LED_PIN   9 // activity LED, comment out to disable
 
 #endif
@@ -56,34 +57,14 @@ typedef struct {
   byte group;
   char msg[RF12_EEPROM_SIZE-4];
   word crc;
-} RF12Config;
+} 
+RF12Config;
 
 static RF12Config config;
 
 static char cmd;
 static byte value, stack[RF12_MAXDATA+4], top, sendLen, dest, quiet;
 static byte testbuf[RF12_MAXDATA], testCounter, useHex;
-
-void sendIdToNewDevice(char id, char ){}
-
-String read() {
-	int bytes_read = 0;
-	String cmd = "";
-	bool valid = false;
-	
-		while (!valid && Serial.available()) {
-			char in = Serial.read();
-			if (in == ';') {
-				valid = true;
-			} else {
-				cmd += (char) in;
-			}
-			bytes_read = bytes_read + 1;
-			delay(2);
-		}
-	
-	return (valid) ? cmd : "err";
-}
 
 static void showNibble (byte nibble) {
   char c = '0' + (nibble & 0x0F);
@@ -96,7 +77,8 @@ static void showByte (byte value) {
   if (useHex) {
     showNibble(value >> 4);
     showNibble(value);
-  } else
+  } 
+  else
     Serial.print((int) value);
 }
 
@@ -115,23 +97,24 @@ static void saveConfig () {
   // set up a nice config string to be shown on startup
   memset(config.msg, 0, sizeof config.msg);
   strcpy(config.msg, " ");
-  
+
   byte id = config.nodeId & 0x1F;
   addCh(config.msg, '@' + id);
   strcat(config.msg, " i");
   addInt(config.msg, id);
   if (config.nodeId & COLLECT)
     addCh(config.msg, '*');
-  
+
   strcat(config.msg, " g");
   addInt(config.msg, config.group);
-  
+
   strcat(config.msg, " @ ");
-  static word bands[4] = { 315, 433, 868, 915 };
+  static word bands[4] = { 
+    315, 433, 868, 915     };
   word band = config.nodeId >> 6;
   addInt(config.msg, bands[band]);
   strcat(config.msg, " MHz ");
-  
+
   config.crc = ~0;
   for (byte i = 0; i < sizeof config - 2; ++i)
     config.crc = _crc16_update(config.crc, ((byte*) &config)[i]);
@@ -141,7 +124,7 @@ static void saveConfig () {
     byte b = ((byte*) &config)[i];
     eeprom_write_byte(RF12_EEPROM_ADDR + i, b);
   }
-  
+
   if (!rf12_config())
     Serial.println("config save failed");
 }
@@ -187,8 +170,6 @@ static void fs20cmd(word house, byte addr, byte cmd) {
     delay(10);
   }
 }
-
-
 
 static void kakuSend(char addr, byte device, byte on) {
   int cmd = 0x600 | ((device - 1) << 4) | ((addr - 1) & 0xF);
@@ -248,7 +229,8 @@ typedef struct {
   word seqnum;
   long timestamp;
   word crc;
-} FlashPage;
+} 
+FlashPage;
 
 // structure of consecutive entries in the data area of each FlashPage
 typedef struct {
@@ -256,7 +238,8 @@ typedef struct {
   byte offset;
   byte header;
   byte data[RF12_MAXDATA];
-} FlashEntry;
+} 
+FlashEntry;
 
 static FlashPage dfBuf;   // for data not yet written to flash
 static word dfLastPage;   // page number last written
@@ -339,7 +322,7 @@ void df_flush () {
 
 static void df_wipe () {
   Serial.println("DF W");
-  
+
   df_writeCmd(0xC7); // Chip Erase
   df_deselect();
   df_flush();
@@ -348,7 +331,7 @@ static void df_wipe () {
 static void df_erase (word block) {
   Serial.print("DF E ");
   Serial.println(block);
-  
+
   df_writeCmd(DF_PAGE_ERASE); // Block Erase
   df_xfer(block >> 8);
   df_xfer(block);
@@ -368,7 +351,7 @@ static void df_saveBuf () {
   dfLastPage = df_wrap(dfLastPage + 1);
   if (dfLastPage == DF_LOG_BEGIN)
     ++dfBuf.seqnum; // bump to next seqnum when wrapping
-  
+
   // set remainder of buffer data to 0xFF and calculate crc over entire buffer
   dfBuf.crc = ~0;
   for (byte i = 0; i < sizeof dfBuf - 2; ++i) {
@@ -376,10 +359,10 @@ static void df_saveBuf () {
       dfBuf.data[i] = 0xFF;
     dfBuf.crc = _crc16_update(dfBuf.crc, dfBuf.data[i]);
   }
-  
+
   df_write(dfLastPage, &dfBuf);
   dfFill = 0;
-  
+
   // wait for write to finish before reporting page, seqnum, and time stamp
   df_flush();
   Serial.print("DF S ");
@@ -388,7 +371,7 @@ static void df_saveBuf () {
   Serial.print(dfBuf.seqnum);
   Serial.print(' ');
   Serial.println(dfBuf.timestamp);
-  
+
   // erase next block if we just saved data into a fresh block
   // at this point in time dfBuf is empty, so a lengthy erase cycle is ok
   if (dfLastPage % DF_BLOCK_SIZE == 0)
@@ -401,7 +384,7 @@ static void df_append (const void* buf, byte len) {
   // fill in page time stamp when appending to a fresh page
   if (dfFill == 0)
     dfBuf.timestamp = now();
-  
+
   long offset = now() - dfBuf.timestamp;
   if (offset >= 255 || dfFill + 1 + len > sizeof dfBuf.data) {
     df_saveBuf();
@@ -427,7 +410,8 @@ static void scanForLastSave () {
     if (currseq != 0xFFFF) {
       dfLastPage = page;
       dfBuf.seqnum = currseq + 1;
-    } else if (dfLastPage == page - 1)
+    } 
+    else if (dfLastPage == page - 1)
       break; // careful with empty-filled-empty case, i.e. after wrap
   }
 }
@@ -447,12 +431,12 @@ static void df_initialize () {
     df_deselect();
 
     scanForLastSave();
-    
+
     Serial.print("DF I ");
     Serial.print(dfLastPage);
     Serial.print(' ');
     Serial.println(dfBuf.seqnum);
-  
+
     // df_wipe();
     df_saveBuf(); //XXX
   }
@@ -464,7 +448,12 @@ static void discardInput () {
 }
 
 static void df_dump () {
-  struct { word seqnum; long timestamp; word crc; } curr;
+  struct { 
+    word seqnum; 
+    long timestamp; 
+    word crc; 
+  } 
+  curr;
   discardInput();
   for (word page = DF_LOG_BEGIN; page < DF_LOG_LIMIT; ++page) {
     if (Serial.read() >= 0)
@@ -486,7 +475,11 @@ static void df_dump () {
 
 static word scanForMarker (word seqnum, long asof) {
   word lastPage = 0;
-  struct { word seqnum; long timestamp; } last, curr;
+  struct { 
+    word seqnum; 
+    long timestamp; 
+  } 
+  last, curr;
   last.seqnum = 0xFFFF;
   // go through all the pages in log area of flash
   for (word page = DF_LOG_BEGIN; page < DF_LOG_LIMIT; ++page) {
@@ -579,10 +572,31 @@ static void df_replay (word seqnum, long asof) {
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 const char helpText1[] PROGMEM = 
-  ""
+"\n"
+"WELCOME TO PABLOS BETTER RFM12 PROGRAM HUEHUEHUE" "\n"
+"Available commands:" "\n"
+"  <nn> i     - set node ID (standard node ids are 1..30)" "\n"
+"  <n> b      - set MHz band (4 = 433, 8 = 868, 9 = 915)" "\n"
+"  <nnn> g    - set network group (RFM12 only allows 212, 0 = any)" "\n"
+"  <n> c      - set collect mode (advanced, normally 0)" "\n"
+"  t          - broadcast max-size test packet, request ack" "\n"
+"  ...,<nn> a - send data packet to node <nn>, request ack" "\n"
+"  ...,<nn> s - send data packet to node <nn>, no ack" "\n"
+"  <n> l      - turn activity LED on PB1 on or off" "\n"
+"  <n> q      - set quiet mode (1 = don't report bad packets)" "\n"
+"  <n> x      - set reporting format (0 = decimal, 1 = hex)" "\n"
+"  123 z      - total power down, needs a reset to start up again" "\n"
+"Remote control commands:" "\n"
+"  <hchi>,<hclo>,<addr>,<cmd> f     - FS20 command (868 MHz)" "\n"
+"  <addr>,<dev>,<on> k              - KAKU command (433 MHz)" "\n"
+"MY ID:" "\n"
 ;
 const char helpText2[] PROGMEM = 
-  ""
+"Flash storage (JeeLink only):" "\n"
+"  d                                - dump all log markers" "\n"
+"  <sh>,<sl>,<t3>,<t2>,<t1>,<t0> r  - replay from specified marker" "\n"
+"  123,<bhi>,<blo> e                - erase 4K block" "\n"
+"  12,34 w                          - wipe entire flash memory" "\n"
 ;
 
 static void showString (PGM_P s) {
@@ -602,6 +616,8 @@ static void showHelp () {
     showString(helpText2);
   Serial.println("Current configuration:");
   rf12_config();
+  Serial.print("\n\nMy ID: ");
+  Serial.println(my_id);
 }
 
 static void handleInput (char c) {
@@ -611,7 +627,8 @@ static void handleInput (char c) {
     if (top < sizeof stack)
       stack[top++] = value;
     value = 0;
-  } else if ('a' <= c && c <='z') {
+  } 
+  else if ('a' <= c && c <='z') {
     Serial.print("> ");
     for (byte i = 0; i < top; ++i) {
       Serial.print((int) stack[i]);
@@ -620,108 +637,109 @@ static void handleInput (char c) {
     Serial.print((int) value);
     Serial.println(c);
     switch (c) {
-      default:
-        showHelp();
-        break;
-      case 'i': // set node id
-        config.nodeId = (config.nodeId & 0xE0) + (value & 0x1F);
-        saveConfig();
-        break;
-      case 'b': // set band: 4 = 433, 8 = 868, 9 = 915
-        if (value)
-          config.nodeId = (bandToFreq(value) << 6) + (config.nodeId & 0x3F);
-        saveConfig();
-        break;
-      case 'g': // set network group
-        config.group = value;
-        saveConfig();
-        break;
-      case 'c': // set collect mode (off = 0, on = 1)
-        if (value)
-          config.nodeId |= COLLECT;
-        else
-          config.nodeId &= ~COLLECT;
-        saveConfig();
-        break;
-      case 't': // broadcast a maximum size test packet, request an ack
-        cmd = 'a';
-        sendLen = RF12_MAXDATA;
-        dest = 0;
-        for (byte i = 0; i < RF12_MAXDATA; ++i)
-          testbuf[i] = i + testCounter;
-        Serial.print("test ");
-        Serial.println((int) testCounter); // first byte in test buffer
-        ++testCounter;
-        break;
-      case 'a': // send packet to node ID N, request an ack
-      case 's': // send packet to node ID N, no ack
-        cmd = c;
-        sendLen = top;
-        dest = value;
-        memcpy(testbuf, stack, top);
-        break;
-      case 'l': // turn activity LED on or off
-        activityLed(value);
-        break;
-      case 'f': // send FS20 command: <hchi>,<hclo>,<addr>,<cmd>f
-        rf12_initialize(0, RF12_868MHZ);
-        activityLed(1);
-        fs20cmd(256 * stack[0] + stack[1], stack[2], value);
-        activityLed(0);
-        rf12_config(0); // restore normal packet listening mode
-        break;
-      case 'k': // send KAKU command: <addr>,<dev>,<on>k
-        rf12_initialize(0, RF12_433MHZ);
-        activityLed(1);
-        kakuSend(stack[0], stack[1], value);
-        activityLed(0);
-        rf12_config(0); // restore normal packet listening mode
-        break;
-      case 'd': // dump all log markers
-        if (df_present())
-          df_dump();
-        break;
-      case 'r': // replay from specified seqnum/time marker
-        if (df_present()) {
-          word seqnum = (stack[0] << 8) || stack[1];
-          long asof = (stack[2] << 8) || stack[3];
-          asof = (asof << 16) | ((stack[4] << 8) || value);
-          df_replay(seqnum, asof);
-        }
-        break;
-      case 'e': // erase specified 4Kb block
-        if (df_present() && stack[0] == 123) {
-          word block = (stack[1] << 8) | value;
-          df_erase(block);
-        }
-        break;
-      case 'w': // wipe entire flash memory
-        if (df_present() && stack[0] == 12 && value == 34) {
-          df_wipe();
-          Serial.println("erased");
-        }
-        break;
-      case 'q': // turn quiet mode on or off (don't report bad packets)
-        quiet = value;
-        break;
-      case 'z': // put the ATmega in ultra-low power mode (reset needed)
-        if (value == 123) {
-          delay(10);
-          rf12_sleep(RF12_SLEEP);
-          cli();
-          Sleepy::powerDown();
-        }
-        break;
-      case 'x': // set reporting mode to hex (1) or decimal (0)
-        useHex = value;
-        break;
-      case 'v': //display the interpreter version
-        displayVersion(1);
-        break;
+    default:
+      showHelp();
+      break;
+    case 'i': // set node id
+      config.nodeId = (config.nodeId & 0xE0) + (value & 0x1F);
+      saveConfig();
+      break;
+    case 'b': // set band: 4 = 433, 8 = 868, 9 = 915
+      if (value)
+        config.nodeId = (bandToFreq(value) << 6) + (config.nodeId & 0x3F);
+      saveConfig();
+      break;
+    case 'g': // set network group
+      config.group = value;
+      saveConfig();
+      break;
+    case 'c': // set collect mode (off = 0, on = 1)
+      if (value)
+        config.nodeId |= COLLECT;
+      else
+        config.nodeId &= ~COLLECT;
+      saveConfig();
+      break;
+    case 't': // broadcast a maximum size test packet, request an ack
+      cmd = 'a';
+      sendLen = RF12_MAXDATA;
+      dest = 0;
+      for (byte i = 0; i < RF12_MAXDATA; ++i)
+        testbuf[i] = i + testCounter;
+      Serial.print("test ");
+      Serial.println((int) testCounter); // first byte in test buffer
+      ++testCounter;
+      break;
+    case 'a': // send packet to node ID N, request an ack
+    case 's': // send packet to node ID N, no ack
+      cmd = c;
+      sendLen = top;
+      dest = value;
+      memcpy(testbuf, stack, top);
+      break;
+    case 'l': // turn activity LED on or off
+      activityLed(value);
+      break;
+    case 'f': // send FS20 command: <hchi>,<hclo>,<addr>,<cmd>f
+      rf12_initialize(0, RF12_868MHZ);
+      activityLed(1);
+      fs20cmd(256 * stack[0] + stack[1], stack[2], value);
+      activityLed(0);
+      rf12_config(0); // restore normal packet listening mode
+      break;
+    case 'k': // send KAKU command: <addr>,<dev>,<on>k
+      rf12_initialize(0, RF12_433MHZ);
+      activityLed(1);
+      kakuSend(stack[0], stack[1], value);
+      activityLed(0);
+      rf12_config(0); // restore normal packet listening mode
+      break;
+    case 'd': // dump all log markers
+      if (df_present())
+        df_dump();
+      break;
+    case 'r': // replay from specified seqnum/time marker
+      if (df_present()) {
+        word seqnum = (stack[0] << 8) || stack[1];
+        long asof = (stack[2] << 8) || stack[3];
+        asof = (asof << 16) | ((stack[4] << 8) || value);
+        df_replay(seqnum, asof);
+      }
+      break;
+    case 'e': // erase specified 4Kb block
+      if (df_present() && stack[0] == 123) {
+        word block = (stack[1] << 8) | value;
+        df_erase(block);
+      }
+      break;
+    case 'w': // wipe entire flash memory
+      if (df_present() && stack[0] == 12 && value == 34) {
+        df_wipe();
+        Serial.println("erased");
+      }
+      break;
+    case 'q': // turn quiet mode on or off (don't report bad packets)
+      quiet = value;
+      break;
+    case 'z': // put the ATmega in ultra-low power mode (reset needed)
+      if (value == 123) {
+        delay(10);
+        rf12_sleep(RF12_SLEEP);
+        cli();
+        Sleepy::powerDown();
+      }
+      break;
+    case 'x': // set reporting mode to hex (1) or decimal (0)
+      useHex = value;
+      break;
+    case 'v': //display the interpreter version
+      displayVersion(1);
+      break;
     }
     value = top = 0;
     memset(stack, 0, sizeof stack);
-  } else if (c == '>') {
+  } 
+  else if (c == '>') {
     // special case, send to specific band and group, and don't echo cmd
     // input: band,group,node,header,data...
     stack[top++] = value;
@@ -731,7 +749,8 @@ static void handleInput (char c) {
     rf12_config(0); // restore original band, etc
     value = top = 0;
     memset(stack, 0, sizeof stack);
-  } else if (' ' < c && c < 'A')
+  } 
+  else if (' ' < c && c < 'A')
     showHelp();
 }
 
@@ -741,34 +760,53 @@ void displayVersion(uint8_t newline ) {
 
 }
 
+
+float getTemperature(){
+  return (analogRead(aPIN_0)*100.0*5.0)/1024.0;
+}
+
 void setup() {
 
-  rfmid_backup_strat = 2;
+  pinMode(LICHT_PIN, OUTPUT);
+
+  timeStart = millis();
 
   Serial.begin(SERIAL_BAUD);
   displayVersion(0);
   activityLed(0);
+  config.nodeId = 0x42; // 433 MHz, node 2 TODO: Check
+  config.group = 0xD4;  // default group 212
+  saveConfig();
 
-
-    config.nodeId = 0x5E; // 433 MHz, node 30 TODO: Check
-    config.group = 0xD4;  // default group 212
-    saveConfig();
 
   df_initialize();
-  
+
   showHelp();
+
+  byte val = EEPROM.read(EEPROM_ADDRESS);
+
+  if(val != 255){
+    my_id = val;
+  }
+
+  if(my_id == 99){
+    rf12_sendNow(checkserver[3], checkserver+3, 3); //sendNow(destination, data, length-1)
+    rf12_sendWait(2);
+  }
 }
 
 void loop() {
-  String serialinput;
- // if (Serial.available())
- // handleInput(Serial.read());
-    
-    
-  serialinput = read();
-  if(serialinput != "err"){
-    Serial.println(serialinput);
+  if(!serverup && my_id == 99){
+    timeNow = millis();
+    if(timeNow >= (timeStart+10000)){
+      rf12_sendNow(checkserver[3], checkserver+3, 3); //Loop to check for server, in network healthy time-intervals
+      rf12_sendWait(2);
+      timeStart = timeNow;
+    }
   }
+  if (Serial.available())
+    handleInput(Serial.read());
+
   if (rf12_recvDone()) {
     byte n = rf12_len;
     if (rf12_crc == 0)
@@ -787,58 +825,73 @@ void loop() {
       showByte(rf12_grp);
     }
     Serial.print(' ');
-    showByte(rf12_hdr);
+    showByte(rf12_hdr);    
     for (byte i = 0; i < n; ++i) {
       if (!useHex)
         Serial.print(' ');
-	  	//HILFE
-                
+
+      if((int) rf12_data[0] == 200 && (int) rf12_data[1] == 200 && (int) rf12_data[2] == 200 && my_id==99) //Signal 200 200 200 X, Set id to X
+      {
+        my_id = rf12_data[3];
+        EEPROM.write(EEPROM_ADDRESS, my_id);																
+        byte id_set_to[70] =  {
+          RF12_433MHZ, 212, 30, 15, 15, 15, my_id                }; 	// Response 15 15 15 X -> id successfully set to X
+        rf12_sendNow(id_set_to[3], id_set_to+3, 4); 
+        rf12_sendWait(0);
+
+      }
+      else if((int) rf12_data[0] == 205 && (int) rf12_data[1] == 205 && (int) rf12_data[2] == 205 && (int) rf12_data[3] == my_id){
+        float temp = getTemperature();							//Signal 205 205 205 X, change value to X
+        int integer = temp;
+        int floatingval = (temp - integer) * 100;
+        byte send_newarduino[70] =  {
+          RF12_433MHZ, 212, 30, 40, 40, 40, integer, floatingval, my_id};  		//Server online -> Ask for ID, if ID == 99
+        rf12_sendNow(send_newarduino[3], send_newarduino+3, 6); 
+        rf12_sendWait(0);
+      }
+
+      //sendarray[70] = {MHZ, GRP, EigeneID, sendToId, zusendendesZeug}
+      //sendNow(destination, data, length-1)
+
+      else if(((int) rf12_data[0] == 111 && (int) rf12_data[1] == 111 && (int) rf12_data[2] == 111 && my_id == 99)){
+        serverup = true;										//Signal 111 111 111, Server gave response -> Server is up
+
+        byte send_newarduino[70] =  {
+          RF12_433MHZ, 212, 30, 1, 1, 1                };  		//Server online -> Ask for ID, if ID == 99
+        rf12_sendNow(send_newarduino[3], send_newarduino+ 3, 3); 
+        rf12_sendWait(2);
+
+      }	
+
+
+      /*if((int) rf12_data[i] == 1)
+       			{
+       				digitalWrite(LICHT_PIN, HIGH);
+       			}
+       		  else{
+       				digitalWrite(LICHT_PIN, LOW);
+       			}*/
+
+      //if((int) rf12_data[i] == 1)
+      //		{
+      //			Serial.println(1 + "; " + rfmids);
+      //			static uint8_t destid = (uint8_t) 1; // 1 da neue RFMs immer mit 1 anfangen
+      //			static byte sentid[65] =  {(byte) 2, (byte) rfmids};
+
+      //			rf12_sendNow(destid, sentid, 2); //gibt im andan RFM sei ID mit
+      //			rf12_sendWait(2);
+      //			//NOTE: mit rf12_initialize(...) kann man dann die GRP & ID �ndan
+
+      //			rfmids++;
+      //		}
 
       showByte(rf12_data[i]);
     }
     Serial.println();
-    
-    if((int) rf12_data[0] == 11 && (int) rf12_data[1] == 11 && (int) rf12_data[2] == 11){
-                
-        static byte send_newid[70] =  {RF12_433MHZ, 212, 2, 111, 111, 111};
-	rf12_sendNow(send_newid[2], send_newid+3, 3);
-	rf12_sendWait(2);
-                
-    }
-    if( (int) rf12_data[0] == 1 && (int) rf12_data[1] == 1 && (int) rf12_data[2] == 1 ){   
-             Serial.write("REQUEST:ID;");
-    }
-    if( (int) rf12_data[0] == 15 && (int) rf12_data[1] == 15 && (int) rf12_data[2] == 15 ){   
-             Serial.write("SUCCESS:IDSET|ID='");
-             int id = (int) rf12_data[3];
-             Serial.print(id);
-             Serial.write("';");
-    }
-    if( (int) rf12_data[0] == 20 && (int) rf12_data[1] == 20 && (int) rf12_data[2] == 20 ){   
-             Serial.write("SUCCESS:VALSET|ID='");
-             int id = (int)rf12_data[4];
-             Serial.print(id);
-             Serial.write("'|VALUE='");
-             int val = (int)rf12_data[3];
-             Serial.print(val);
-             Serial.write("';");
-    }
-    if((int) rf12_data[0] == 40 && (int) rf12_data[1] == 40 && (int) rf12_data[2] == 40){
-             Serial.write("SUCCESS:GOTTEMP|ID='");
-             int id = (int)rf12_data[5];
-             Serial.print(id);
-             Serial.write("'|VALUE='");
-             int val_integer = (int)rf12_data[3];
-             int val_pointnumber = (int) rf12_data[4];
-             Serial.print(val_integer);
-             Serial.print(".");
-             Serial.print(val_pointnumber);
-             Serial.write("';");
-    }
-    
+
     if (rf12_crc == 0) {
       activityLed(1);
-      
+
       if (df_present())
         df_append((const char*) rf12_data - 2, rf12_len + 2);
 
@@ -846,103 +899,18 @@ void loop() {
         Serial.println(" -> ack");
         rf12_sendStart(RF12_ACK_REPLY, 0, 0);
       }
-      
+
       activityLed(0);
     }
   }
 
- if(serialinput.substring(0,6) == "B!R:ID"){//B!R:ID|ID=X;
-            //SEND ID TO NODE 99
-            char target_id[5];
-            target_id[0] = serialinput[10];
-            int ind = 11;
-            int length = serialinput.length();
-            
-           while(ind < length){
-              target_id[ind-10] = serialinput[ind];
-              ind++; 
-           }
-            
-            int t_id = atoi(target_id);
-            byte send_newid[70] =  {RF12_433MHZ, 212, 2, 200, 200, 200, t_id};
-	    rf12_sendNow(send_newid[2], send_newid+3, 4);
-            rf12_sendWait(0);
-            for(int i = 0; i<5;i++){
-              target_id[i] = NULL;
-              t_id = NULL;
-            }
-              
-        }
-        else if(serialinput.substring(0,11) == "C!E:COMMAND"){          //C!E:COMMAND|ID=X|VALUE=Y;
-            //SENT VALUE TO ID
-            char target_id[5];
-            target_id[0] = serialinput[15];
-            int index = 16;
-            int length = serialinput.length();
-            
-            int diff = 124;
-            
-            while(serialinput[index] != (char) diff){
-              target_id[index - 15] = serialinput[index]; 
-              index++;
-            }
-            
-            int t_id = atoi(target_id);
-            
-            int pos = index - 16;
-            
-            char target_value[5];
-            target_value[0] = serialinput[23 + pos];
-            index = 24 + pos;
-            
-            while(index < length){
-              target_value[index - (23 + pos)] = serialinput[index]; 
-              index++;
-            }
-            
-            int t_val = atoi(target_value);
-            byte send_newid[70] =  {RF12_433MHZ, 212, 2, 205, 205, 205, t_id, t_val};
-	    rf12_sendNow(send_newid[2], send_newid+3, 5);
-	    rf12_sendWait(0);
 
-            for(int i = 0; i<5;i++){
-              target_id[i] = NULL;
-              target_value[i] = NULL;
-              t_id = NULL;
-              t_val = NULL;
-            }
-            
-        }
-         
-	else if(serialinput.substring(0,10) == "W!R:UPDATE"){//W!R:UPDATE|ID=X
-            char target_id[5];
-            target_id[0] = serialinput[14];
-            int ind = 15;
-            int length = serialinput.length();
-            
-           while(ind < length){
-              target_id[ind-14] = serialinput[ind];
-              ind++; 
-           }
-            
-            int t_id = atoi(target_id);
-            byte send_newid[70] =  {RF12_433MHZ, 212, 2, 205, 205, 205, t_id, 1};
-	    rf12_sendNow(send_newid[2], send_newid+3, 5);
-	    rf12_sendWait(0);
-            for(int i = 0; i<5;i++){
-              target_id[i] = NULL;
-              t_id = NULL;
-            }
-              
-        }        
-
-
-	/*paultime2 = millis();
-	paultimesp = paultime2 - paultime1;
-	if(paultimesp >= 10000){
-		Serial.println("Jetzt sollts sendn!");
-		paultime1 = paultime2;
-	}*/
+  /*paultime2 = millis();
+   	paultimesp = paultime2 - paultime1;
+   	if(paultimesp >= 10000){
+   		Serial.println("Jetzt sollts sendn!");
+   		paultime1 = paultime2;
+   	}*/
 
   if (cmd && rf12_canSend()) {
     activityLed(1);
@@ -959,4 +927,6 @@ void loop() {
     activityLed(0);
   }
 }
+
+
 
